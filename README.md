@@ -27,3 +27,10 @@ pip install -r requirements.txt
 ```bash
 python crypto_forecast.py --symbol BTC/USDT --start_date 2015-01-01 --end_date 2023-12-31 --forecast_days 365
 ```
+
+## **File Outputs**
+
+- crypto_historical_data.csv: Historical OHLCV data.
+- crypto_price_forecast.csv: Forecast data for the specified period.
+- crypto_forecast_with_actual.csv: Combined file with forecast and actual prices.
+- [symbol]_forecast_plot.png: A plot of forecast vs. actual prices (e.g., BTC_USDT_forecast_plot.png).
