@@ -25,7 +25,7 @@ pip install -r requirements.txt
 ## **Run app**
 
 ```bash
-python crypto_forecast.py --symbol BTC/USDT --start_date 2015-01-01 --end_date 2023-12-31 --forecast_days 365
+python crypto_forecast.py --symbol BTC/USDT --start_date 2015-01-01 --end_date 2024-11-26 --forecast_days 365 --save_csv True
 ```
 
 ## **File Outputs**
