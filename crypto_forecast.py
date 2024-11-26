@@ -1,149 +1,106 @@
-import ccxt
-import pandas as pd
-from prophet import Prophet
-import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error
+import os
 import argparse
-import time
+import pandas as pd
+import matplotlib.pyplot as plt
+from prophet import Prophet
+from sklearn.metrics import mean_absolute_error
+import ccxt
 
-
-# 1. Fetch historical data
 def fetch_historical_data(symbol, start_date, end_date):
-    binance = ccxt.binance()
+    exchange = ccxt.binance()
+    since = exchange.parse8601(f"{start_date}T00:00:00Z")
+    end_timestamp = exchange.parse8601(f"{end_date}T00:00:00Z")
     timeframe = '1d'
-    since = binance.parse8601(f'{start_date}T00:00:00Z')
-    end_timestamp = binance.parse8601(f'{end_date}T00:00:00Z')
 
     all_data = []
-    limit = 1000
-    current_since = since
-
-    print(f"Fetching data for {symbol} from {start_date} to {end_date}...")
-
-    while True:
-        try:
-            ohlcv = binance.fetch_ohlcv(symbol, timeframe, since=current_since, limit=limit)
-        except Exception as e:
-            print(f"Error fetching data: {e}")
-            break
-
+    while since < end_timestamp:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since)
         if not ohlcv:
             break
-
-        # Append data
         all_data.extend(ohlcv)
+        since = ohlcv[-1][0] + 86400000
 
-        # Check if end date is reached
-        if ohlcv[-1][0] >= end_timestamp:
-            break
-
-        # Update since timestamp
-        current_since = ohlcv[-1][0] + 1
-        time.sleep(1)
-
-    # Convert to DataFrame
-    df = pd.DataFrame(all_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+    df = pd.DataFrame(all_data, columns=columns)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-
-    # Filter by end date
-    df = df[df['timestamp'] <= pd.to_datetime(end_date)]
-
-    print(f"Fetched {len(df)} records.")
-    df.to_csv('crypto_historical_data.csv', index=False)
-    print("Data saved to file: crypto_historical_data.csv")
-
+    df.rename(columns={'timestamp': 'date'}, inplace=True)
     return df
 
-
-# 2. Prepare data for Prophet
-def prepare_data_for_prophet(df):
-    df_prophet = df[['timestamp', 'close']].rename(columns={'timestamp': 'ds', 'close': 'y'})
-    return df_prophet
-
-
-# 3. Train and forecast using Prophet
-def train_and_forecast(df_prophet, forecast_days):
-    print(f"Training Prophet model and forecasting for the next {forecast_days} days...")
+def train_and_forecast(data, forecast_days):
+    df = data[['date', 'close']].rename(columns={'date': 'ds', 'close': 'y'})
     model = Prophet()
-    model.fit(df_prophet)
+    model.fit(df)
 
-    # Create forecast
     future = model.make_future_dataframe(periods=forecast_days)
     forecast = model.predict(future)
+    return forecast
 
-    # Save forecast
-    forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].to_csv('crypto_price_forecast.csv', index=False)
-    print("Forecast saved to file: crypto_price_forecast.csv")
+def compare_forecast_with_actual(forecast, historical):
+    forecast['actual'] = historical['close'].values[:len(forecast)]
+    forecast_with_actual = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper', 'actual']]
+    forecast_with_actual['error'] = forecast_with_actual['actual'] - forecast_with_actual['yhat']
+    mae = mean_absolute_error(forecast_with_actual['actual'], forecast_with_actual['yhat'])
+    return forecast_with_actual, mae
 
-    return forecast, model
-
-
-# 4. Merge forecast with actual data
-def compare_forecast_with_actual(forecast, historical_data):
-    print("Merging forecast with actual data...")
-    historical_data['ds'] = pd.to_datetime(historical_data['timestamp'])
-    historical_data = historical_data[['ds', 'close']]
-
-    forecast = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
-    combined = pd.merge(forecast, historical_data, on='ds', how='left')
-    combined.rename(columns={'close': 'actual'}, inplace=True)
-
-    combined.to_csv('crypto_forecast_with_actual.csv', index=False)
-    print("Forecast and actual data saved to file: crypto_forecast_with_actual.csv")
-
-    # Calculate MAE
-    valid_data = combined.dropna(subset=['actual'])
-    mae = mean_absolute_error(valid_data['actual'], valid_data['yhat'])
-    print(f"Mean Absolute Error (MAE): {mae}")
-
-    return combined, mae
-
-
-# 5. Plot forecast and actual data
-def plot_forecast_with_actual(combined, symbol):
-    plt.figure(figsize=(14, 7))
-    plt.plot(combined['ds'], combined['yhat'], label='Forecast', color='orange')
-    plt.fill_between(combined['ds'], combined['yhat_lower'], combined['yhat_upper'], color='gray', alpha=0.2, label='Confidence Interval')
-    plt.plot(combined['ds'], combined['actual'], label='Actual', color='blue', alpha=0.6)
-    plt.axvline(pd.Timestamp.today(), color='red', linestyle='--', label='Today')
-    plt.legend()
-    plt.title(f'Forecast vs Actual for {symbol}')
+def plot_forecast(forecast_with_actual, symbol, save_path):
+    plt.figure(figsize=(12, 6))
+    plt.plot(forecast_with_actual['ds'], forecast_with_actual['actual'], label='Actual Prices', color='blue')
+    plt.plot(forecast_with_actual['ds'], forecast_with_actual['yhat'], label='Forecast Prices', color='orange')
+    plt.fill_between(
+        forecast_with_actual['ds'],
+        forecast_with_actual['yhat_lower'],
+        forecast_with_actual['yhat_upper'],
+        color='orange', alpha=0.2, label='Confidence Interval'
+    )
     plt.xlabel('Date')
-    plt.ylabel('Price')
-    plt.grid()
+    plt.ylabel('Price (USD)')
+    plt.title(f'{symbol} Price Forecast')
+    plt.legend()
 
-    filename = f'{symbol.replace("/", "_")}_forecast_plot.png'
-    plt.savefig(filename, format='png')
-    print(f"Plot saved to file: {filename}")
+    os.makedirs(save_path, exist_ok=True)
+    plot_path = os.path.join(save_path, f"{symbol.replace('/', '_')}_forecast_plot.png")
+    plt.savefig(plot_path)
+    plt.close()
+    print(f"Plot saved at: {plot_path}")
 
-    plt.show()
-
-
-# Main process
 def main():
-    parser = argparse.ArgumentParser(description="Cryptocurrency forecast using Prophet.")
-    parser.add_argument('--symbol', type=str, required=True, help="Cryptocurrency pair (e.g., BTC/USDT).")
-    parser.add_argument('--start_date', type=str, required=True, help="Start date for data collection (e.g., 2015-01-01).")
-    parser.add_argument('--end_date', type=str, required=True, help="End date for data collection (e.g., 2023-12-31).")
-    parser.add_argument('--forecast_days', type=int, required=True, help="Number of days to forecast.")
-
+    parser = argparse.ArgumentParser(description='Cryptocurrency Forecasting Tool')
+    parser.add_argument('--symbol', type=str, required=True, help='Cryptocurrency pair (e.g., BTC/USDT)')
+    parser.add_argument('--start_date', type=str, required=True, help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end_date', type=str, required=True, help='End date (YYYY-MM-DD)')
+    parser.add_argument('--forecast_days', type=int, required=True, help='Number of days to forecast')
+    parser.add_argument('--save_csv', type=bool, default=True, help='Save CSV files locally (True/False)')
     args = parser.parse_args()
 
-    # Fetch historical data
+    print("Fetching historical data...")
     historical_data = fetch_historical_data(args.symbol, args.start_date, args.end_date)
 
-    # Prepare data for Prophet
-    df_prophet = prepare_data_for_prophet(historical_data)
+    if args.save_csv:
+        csv_folder = 'csv_files'
+        os.makedirs(csv_folder, exist_ok=True)
+        historical_path = os.path.join(csv_folder, 'crypto_historical_data.csv')
+        historical_data.to_csv(historical_path, index=False)
+        print(f"Historical data saved at: {historical_path}")
 
-    # Train and forecast
-    forecast, model = train_and_forecast(df_prophet, args.forecast_days)
+    print("Training and forecasting...")
+    forecast = train_and_forecast(historical_data, args.forecast_days)
 
-    # Merge forecast with actual data
-    combined, mae = compare_forecast_with_actual(forecast, historical_data)
+    if args.save_csv:
+        forecast_path = os.path.join(csv_folder, 'crypto_price_forecast.csv')
+        forecast.to_csv(forecast_path, index=False)
+        print(f"Forecast data saved at: {forecast_path}")
 
-    # Plot forecast and actual data
-    plot_forecast_with_actual(combined, args.symbol)
+    print("Comparing forecast with actual data...")
+    forecast_with_actual, mae = compare_forecast_with_actual(forecast, historical_data)
+    print(f"Mean Absolute Error: {mae}")
 
+    if args.save_csv:
+        combined_path = os.path.join(csv_folder, 'crypto_forecast_with_actual.csv')
+        forecast_with_actual.to_csv(combined_path, index=False)
+        print(f"Forecast with actual data saved at: {combined_path}")
+
+    print("Plotting forecast...")
+    plot_forecast(forecast_with_actual, args.symbol, save_path='plots')
 
 if __name__ == '__main__':
     main()
